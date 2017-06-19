@@ -3,9 +3,10 @@
 buildscript {
     repositories {
         jcenter()
+        maven { url 'https://maven.google.com' }
     }
     dependencies {
-        classpath 'com.android.tools.build:gradle:2.3.0-beta2'
+        classpath 'com.android.tools.build:gradle:3.0.0-alpha4'
 
         // NOTE: Do not place your application dependencies here; they belong
         // in the individual module build.gradle files
@@ -15,9 +16,19 @@ buildscript {
 allprojects {
     repositories {
         jcenter()
+        maven { url 'https://maven.google.com' }
     }
 }
 
 task clean(type: Delete) {
     delete rootProject.buildDir
 }
+
+ext.compile_sdk_version = 26
+ext.build_tools_version = "26.0.0"
+ext.target_sdk_version = 26
+ext.support_version = "26.0.0-beta2"
+ext.play_services_version = "11.0.1"
+ext.things_version = "0.4.1-devpreview"
+ext.junit_version = "4.12"
+ext.espresso_version = "2.2.2"

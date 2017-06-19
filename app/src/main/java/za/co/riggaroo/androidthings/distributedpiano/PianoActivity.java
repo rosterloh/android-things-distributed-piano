@@ -1,8 +1,9 @@
 package za.co.riggaroo.androidthings.distributedpiano;
 
 import android.app.Activity;
-import android.net.ConnectivityManager;
+import android.content.pm.PackageManager;
 import android.os.Bundle;
+import android.support.annotation.NonNull;
 import android.support.annotation.Nullable;
 import android.util.Log;
 
@@ -10,9 +11,12 @@ import com.google.android.things.contrib.driver.pwmspeaker.Speaker;
 
 import java.io.IOException;
 
+import static android.Manifest.permission.ACCESS_COARSE_LOCATION;
+
 public class PianoActivity extends Activity implements PianoContract.View {
 
     private static final String TAG = "PianoActivity";
+    private final static int REQUEST_PERMISSION_REQ_CODE = 33;
     private Speaker speaker;
 
     private PianoContract.Presenter presenter;
@@ -21,10 +25,44 @@ public class PianoActivity extends Activity implements PianoContract.View {
     protected void onCreate(@Nullable final Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
+        if (hasRequiredPermissions()) {
+            startComponents();
+        } else {
+            requestRequiredPermissions();
+        }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(final int requestCode, final @NonNull String[] permissions, final @NonNull int[] grantResults) {
+        switch (requestCode) {
+            case REQUEST_PERMISSION_REQ_CODE: {
+                if (grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                    // We have been granted the Manifest.permission.ACCESS_COARSE_LOCATION permission. Now we may proceed with advertising.
+                    startComponents();
+                    presenter.attachView(this);
+                } else {
+                    Log.w(TAG, "Required permissions not granted");
+                }
+                break;
+            }
+        }
+    }
+
+    private boolean hasRequiredPermissions() {
+        return checkSelfPermission(ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private void requestRequiredPermissions() {
+        if (shouldShowRequestPermissionRationale(ACCESS_COARSE_LOCATION)) {
+            Log.w(TAG, "Location permission is required for this application");
+        }
+        requestPermissions(new String[]{ACCESS_COARSE_LOCATION}, REQUEST_PERMISSION_REQ_CODE);
+    }
+
+    private void startComponents() {
         try {
             speaker = new Speaker(BoardDefaults.getPwmPin());
-            presenter = new PianoPresenter(this, (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE),
-                    getString(R.string.service_id), getPackageName());
+            presenter = new PianoPresenter(this, getString(R.string.service_id));
         } catch (IOException e) {
             throw new IllegalArgumentException("Piezo can't be opened, lets end this here.");
         }
@@ -34,7 +72,8 @@ public class PianoActivity extends Activity implements PianoContract.View {
     public void onStart() {
         super.onStart();
         Log.d(TAG, "onStart");
-        presenter.attachView(this);
+        if (presenter != null)
+            presenter.attachView(this);
 
     }
 
@@ -42,7 +81,8 @@ public class PianoActivity extends Activity implements PianoContract.View {
     public void onStop() {
         super.onStop();
         Log.d(TAG, "onStop");
-        presenter.detachView();
+        if (presenter != null)
+            presenter.detachView();
 
     }
 

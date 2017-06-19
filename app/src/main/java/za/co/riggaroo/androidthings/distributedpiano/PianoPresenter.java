@@ -1,9 +1,6 @@
 package za.co.riggaroo.androidthings.distributedpiano;
 
-
 import android.content.Context;
-import android.net.ConnectivityManager;
-import android.net.NetworkInfo;
 import android.os.Bundle;
 import android.support.annotation.NonNull;
 import android.support.annotation.Nullable;
@@ -12,42 +9,91 @@ import android.util.Log;
 import com.google.android.gms.common.ConnectionResult;
 import com.google.android.gms.common.api.GoogleApiClient;
 import com.google.android.gms.common.api.ResultCallback;
-import com.google.android.gms.common.api.Status;
 import com.google.android.gms.nearby.Nearby;
-import com.google.android.gms.nearby.connection.AppIdentifier;
-import com.google.android.gms.nearby.connection.AppMetadata;
+import com.google.android.gms.nearby.connection.AdvertisingOptions;
+import com.google.android.gms.nearby.connection.ConnectionInfo;
+import com.google.android.gms.nearby.connection.ConnectionLifecycleCallback;
+import com.google.android.gms.nearby.connection.ConnectionResolution;
 import com.google.android.gms.nearby.connection.Connections;
 import com.google.android.gms.nearby.connection.ConnectionsStatusCodes;
+import com.google.android.gms.nearby.connection.Payload;
+import com.google.android.gms.nearby.connection.PayloadCallback;
+import com.google.android.gms.nearby.connection.PayloadTransferUpdate;
+import com.google.android.gms.nearby.connection.Strategy;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.util.ArrayList;
-import java.util.List;
 
 class PianoPresenter implements PianoContract.Presenter, GoogleApiClient.ConnectionCallbacks,
-        GoogleApiClient.OnConnectionFailedListener, Connections.ConnectionRequestListener, Connections.MessageListener {
+        GoogleApiClient.OnConnectionFailedListener {
 
     private static final String TAG = "PianoPresenter";
     private final GoogleApiClient googleApiClient;
+    private static final String DEVICE_NAME = "DistributedPiano";
     private final String serviceId;
-    private final String packageName;
     private PianoContract.View view;
-    private ConnectivityManager connectivityManager;
 
-    PianoPresenter(Context context, ConnectivityManager connectivityManager, String serviceId,
-                   String packageName) throws IOException {
+    private final ConnectionLifecycleCallback connectionLifecycleCallback = new ConnectionLifecycleCallback() {
+        @Override
+        public void onConnectionInitiated(String endpointId, ConnectionInfo connectionInfo) {
+            Log.d(TAG, "Connection initiated from " + endpointId + " " + connectionInfo.getEndpointName());
+            Nearby.Connections.acceptConnection(googleApiClient, endpointId, payloadCallback);
+        }
+
+        @Override
+        public void onConnectionResult(String endpointId, ConnectionResolution connectionResolution) {
+            Log.d(TAG, "onConnectionResult");
+            if (connectionResolution.getStatus().isSuccess()) {
+                Log.d(TAG, "Endpoint " + endpointId + " connected");
+            } else {
+                Log.w(TAG, "Endpoint " + endpointId + " already connected");
+            }
+        }
+
+        @Override
+        public void onDisconnected(String endpointId) {
+            Log.d(TAG, endpointId + " disconnected");
+        }
+    };
+
+    private final PayloadCallback payloadCallback = new PayloadCallback() {
+        @Override
+        public void onPayloadReceived(String endpointId, Payload payload) {
+            Log.d(TAG, "onPayloadReceived");
+            double frequency = toDouble(payload.asBytes());
+            if (frequency == -1) {
+                view.stopPlayingNote();
+                return;
+            }
+            view.playNote(frequency);
+        }
+
+        @Override
+        public void onPayloadTransferUpdate(String endpointId, PayloadTransferUpdate payloadTransferUpdate) {
+            switch (payloadTransferUpdate.getStatus()) {
+                case PayloadTransferUpdate.Status.IN_PROGRESS:
+                    Log.d(TAG, "onPayloadTransferUpdate " + payloadTransferUpdate.getBytesTransferred() + " bytes transferred");
+                    break;
+                case PayloadTransferUpdate.Status.SUCCESS:
+                    Log.d(TAG, "onPayloadTransferUpdate completed");
+                    break;
+                case PayloadTransferUpdate.Status.FAILURE:
+                    Log.d(TAG, "onPayloadTransferUpdate failed");
+                    break;
+            }
+        }
+    };
+
+    PianoPresenter(Context context, String serviceId) throws IOException {
         googleApiClient = new GoogleApiClient.Builder(context).addConnectionCallbacks(this)
                 .addOnConnectionFailedListener(this).addApi(Nearby.CONNECTIONS_API).build();
         this.serviceId = serviceId;
-        this.connectivityManager = connectivityManager;
-        this.packageName = packageName;
     }
 
     @Override
     public void onConnected(@Nullable final Bundle bundle) {
         Log.d(TAG, "onConnected!");
         startAdvertising();
-
     }
 
     @Override
@@ -60,25 +106,11 @@ class PianoPresenter implements PianoContract.Presenter, GoogleApiClient.Connect
         Log.d(TAG, "onConnectionFailed");
     }
 
-    private boolean isConnectedToNetwork() {
-        NetworkInfo info = connectivityManager.getNetworkInfo(ConnectivityManager.TYPE_WIFI);
-        NetworkInfo info1 = connectivityManager.getNetworkInfo(ConnectivityManager.TYPE_ETHERNET);
-
-        return (info != null && info.isConnectedOrConnecting()) || (info1 != null && info1.isConnectedOrConnecting());
-    }
-
-
     private void startAdvertising() {
         Log.d(TAG, "startAdvertising");
-        if (!isConnectedToNetwork()) {
-            Log.d(TAG, "startAdvertising: not connected to WiFi network.");
-            return;
-        }
-
-        List<AppIdentifier> appIdentifierList = new ArrayList<>();
-        appIdentifierList.add(new AppIdentifier(packageName));
-        AppMetadata appMetadata = new AppMetadata(appIdentifierList);
-        Nearby.Connections.startAdvertising(googleApiClient, serviceId, appMetadata, 0L, this)
+        AdvertisingOptions advertisingOptions = new AdvertisingOptions(Strategy.P2P_CLUSTER);
+        Nearby.Connections
+                .startAdvertising(googleApiClient, DEVICE_NAME, serviceId, connectionLifecycleCallback, advertisingOptions)
                 .setResultCallback(new ResultCallback<Connections.StartAdvertisingResult>() {
                     @Override
                     public void onResult(@NonNull Connections.StartAdvertisingResult result) {
@@ -99,42 +131,8 @@ class PianoPresenter implements PianoContract.Presenter, GoogleApiClient.Connect
                 });
     }
 
-    @Override
-    public void onConnectionRequest(final String endpointId, String deviceId, String endpointName, byte[] payload) {
-        Log.d(TAG, "onConnectionRequest");
-
-        Nearby.Connections.acceptConnectionRequest(googleApiClient, endpointId, payload, this)
-                .setResultCallback(new ResultCallback<Status>() {
-                    @Override
-                    public void onResult(@NonNull Status status) {
-                        if (status.isSuccess()) {
-                            Log.d(TAG, "acceptConnectionRequest: SUCCESS");
-
-                        } else {
-                            Log.d(TAG, "acceptConnectionRequest: FAILURE");
-                        }
-                    }
-                });
-    }
-
-    @Override
-    public void onMessageReceived(final String s, final byte[] bytes, final boolean b) {
-        Log.d(TAG, "onMessageReceived");
-        double frequency = toDouble(bytes);
-        if (frequency == -1) {
-            view.stopPlayingNote();
-            return;
-        }
-        view.playNote(frequency);
-    }
-
     private static double toDouble(byte[] bytes) {
         return ByteBuffer.wrap(bytes).getDouble();
-    }
-
-    @Override
-    public void onDisconnected(final String s) {
-
     }
 
     @Override

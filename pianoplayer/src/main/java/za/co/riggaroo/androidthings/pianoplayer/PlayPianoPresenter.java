@@ -1,9 +1,6 @@
 package za.co.riggaroo.androidthings.pianoplayer;
 
-
 import android.content.Context;
-import android.net.ConnectivityManager;
-import android.net.NetworkInfo;
 import android.os.Bundle;
 import android.support.annotation.NonNull;
 import android.support.annotation.Nullable;
@@ -14,28 +11,93 @@ import com.google.android.gms.common.api.GoogleApiClient;
 import com.google.android.gms.common.api.ResultCallback;
 import com.google.android.gms.common.api.Status;
 import com.google.android.gms.nearby.Nearby;
-import com.google.android.gms.nearby.connection.Connections;
+import com.google.android.gms.nearby.connection.ConnectionInfo;
+import com.google.android.gms.nearby.connection.ConnectionLifecycleCallback;
+import com.google.android.gms.nearby.connection.ConnectionResolution;
 import com.google.android.gms.nearby.connection.ConnectionsStatusCodes;
+import com.google.android.gms.nearby.connection.DiscoveredEndpointInfo;
+import com.google.android.gms.nearby.connection.DiscoveryOptions;
+import com.google.android.gms.nearby.connection.EndpointDiscoveryCallback;
+import com.google.android.gms.nearby.connection.Payload;
+import com.google.android.gms.nearby.connection.PayloadCallback;
+import com.google.android.gms.nearby.connection.PayloadTransferUpdate;
+import com.google.android.gms.nearby.connection.Strategy;
 
 import java.nio.ByteBuffer;
 
-import static android.content.Context.CONNECTIVITY_SERVICE;
-
 class PlayPianoPresenter implements PlayPianoContract.Presenter, GoogleApiClient.ConnectionCallbacks,
-        GoogleApiClient.OnConnectionFailedListener, Connections.EndpointDiscoveryListener, Connections.MessageListener {
+        GoogleApiClient.OnConnectionFailedListener {
 
     private static final String TAG = "PlayPianoPresenter";
-    private static final long TIMEOUT_DISCOVER = 4000;
+    private static final String DEVICE_NAME = "PianoPlayer";
     private final GoogleApiClient googleApiClient;
     private final String serviceId;
-    private Context context;
     private String otherEndpointId;
     private PlayPianoContract.View view;
+
+    private final EndpointDiscoveryCallback endpointDiscoveryCallback = new EndpointDiscoveryCallback() {
+        @Override
+        public void onEndpointFound(String endpointId, DiscoveredEndpointInfo discoveredEndpointInfo) {
+            Log.d(TAG, "onEndpointFound:" + endpointId + ":" + discoveredEndpointInfo.getEndpointName());
+            Nearby.Connections.stopDiscovery(googleApiClient);
+            connectTo(endpointId, discoveredEndpointInfo.getEndpointName());
+        }
+
+        @Override
+        public void onEndpointLost(String endpointId) {
+            Log.d(TAG, "onEndpointLost:" + endpointId);
+            startDiscovery();
+        }
+    };
+
+    private final ConnectionLifecycleCallback connectionLifecycleCallback = new ConnectionLifecycleCallback() {
+        @Override
+        public void onConnectionInitiated(String endpointId, ConnectionInfo connectionInfo) {
+            Log.d(TAG, "Connection initiated from " + endpointId + " " + connectionInfo.getEndpointName());
+            Nearby.Connections.acceptConnection(googleApiClient, endpointId, payloadCallback);
+        }
+
+        @Override
+        public void onConnectionResult(String endpointId, ConnectionResolution connectionResolution) {
+            Log.d(TAG, "Connection from " + endpointId);
+            if (connectionResolution.getStatus().isSuccess()) {
+                otherEndpointId = endpointId;
+            } else {
+                Log.w(TAG, "Connection to " + endpointId + " rejected");
+            }
+        }
+
+        @Override
+        public void onDisconnected(String endpointId) {
+            Log.d(TAG, endpointId + " disconnected");
+        }
+    };
+
+    private final PayloadCallback payloadCallback = new PayloadCallback() {
+        @Override
+        public void onPayloadReceived(String endpointId, Payload payload) {
+            Log.d(TAG, "onPayloadReceived");
+        }
+
+        @Override
+        public void onPayloadTransferUpdate(String endpointId, PayloadTransferUpdate payloadTransferUpdate) {
+            switch (payloadTransferUpdate.getStatus()) {
+                case PayloadTransferUpdate.Status.IN_PROGRESS:
+                    Log.d(TAG, "onPayloadTransferUpdate " + payloadTransferUpdate.getBytesTransferred() + " bytes transferred");
+                    break;
+                case PayloadTransferUpdate.Status.SUCCESS:
+                    Log.d(TAG, "onPayloadTransferUpdate completed");
+                    break;
+                case PayloadTransferUpdate.Status.FAILURE:
+                    Log.d(TAG, "onPayloadTransferUpdate failed");
+                    break;
+            }
+        }
+    };
 
     PlayPianoPresenter(Context context, String serviceId) {
         googleApiClient = new GoogleApiClient.Builder(context).addApi(Nearby.CONNECTIONS_API)
                 .addConnectionCallbacks(this).addOnConnectionFailedListener(this).build();
-        this.context = context;
         this.serviceId = serviceId;
     }
 
@@ -81,44 +143,30 @@ class PlayPianoPresenter implements PlayPianoContract.Presenter, GoogleApiClient
         Log.d(TAG, "onConnectionFailed:" + connectionResult.getErrorCode());
     }
 
-    private void connectTo(String endpointId, final String endpointName) {
+    private void connectTo(final String endpointId, final String endpointName) {
         Log.d(TAG, "connectTo:" + endpointId + ":" + endpointName);
-        Nearby.Connections.sendConnectionRequest(googleApiClient, null, endpointId, null,
-                new Connections.ConnectionResponseCallback() {
+        Nearby.Connections
+                .requestConnection(googleApiClient, DEVICE_NAME, endpointId, connectionLifecycleCallback)
+                .setResultCallback(new ResultCallback<Status>() {
                     @Override
-                    public void onConnectionResponse(String endpointId, Status status, byte[] bytes) {
-                        Log.d(TAG, "onConnectionResponse:" + endpointId + ":" + status);
+                    public void onResult(@NonNull Status status) {
                         if (!isViewAttached()) {
                             return;
                         }
                         if (status.isSuccess()) {
                             Log.d(TAG, "onConnectionResponse: " + endpointName + " SUCCESS");
                             view.showConnectedToMessage(endpointName);
-
-                            otherEndpointId = endpointId;
                         } else {
                             Log.d(TAG, "onConnectionResponse: " + endpointName + " FAILURE");
                         }
                     }
-                }, this);
+                });
     }
-
-    private boolean isConnectedToNetwork() {
-        ConnectivityManager connManager = (ConnectivityManager) context.getSystemService(CONNECTIVITY_SERVICE);
-        NetworkInfo info = connManager.getNetworkInfo(ConnectivityManager.TYPE_WIFI);
-        NetworkInfo info1 = connManager.getNetworkInfo(ConnectivityManager.TYPE_ETHERNET);
-        return (info != null && info.isConnectedOrConnecting()) || (info1 != null && info1.isConnectedOrConnecting());
-    }
-
 
     private void startDiscovery() {
         Log.d(TAG, "startDiscovery");
-        if (!isConnectedToNetwork()) {
-            Log.d(TAG, "startDiscovery: not connected to WiFi network.");
-            return;
-        }
-
-        Nearby.Connections.startDiscovery(googleApiClient, serviceId, TIMEOUT_DISCOVER, this)
+        Nearby.Connections
+                .startDiscovery(googleApiClient, serviceId, endpointDiscoveryCallback, new DiscoveryOptions(Strategy.P2P_CLUSTER))
                 .setResultCallback(new ResultCallback<Status>() {
                     @Override
                     public void onResult(@NonNull Status status) {
@@ -139,19 +187,6 @@ class PlayPianoPresenter implements PlayPianoContract.Presenter, GoogleApiClient
                 });
     }
 
-    @Override
-    public void onEndpointFound(final String endpointId, String deviceId, String serviceId, final String endpointName) {
-        Log.d(TAG, "onEndpointFound:" + endpointId + ":" + endpointName);
-
-        connectTo(endpointId, endpointName);
-
-    }
-
-    @Override
-    public void onEndpointLost(String endpointId) {
-        Log.d(TAG, "onEndpointLost:" + endpointId);
-    }
-
     /**
      * The function for calculating the frequency that should be played for a certain note.
      * More information about the formula can be found here: https://en.wikipedia.org/wiki/Piano_key_frequencies
@@ -169,7 +204,8 @@ class PlayPianoPresenter implements PlayPianoContract.Presenter, GoogleApiClient
 
             return;
         }
-        Nearby.Connections.sendReliableMessage(googleApiClient, otherEndpointId, toByteArray(frequency));
+        Payload payload = Payload.fromBytes(toByteArray(frequency));
+        Nearby.Connections.sendPayload(googleApiClient, otherEndpointId, payload);
     }
 
     private static byte[] toByteArray(double value) {
@@ -183,17 +219,7 @@ class PlayPianoPresenter implements PlayPianoContract.Presenter, GoogleApiClient
             view.showApiNotConnected();
             return;
         }
-        Nearby.Connections.sendReliableMessage(googleApiClient, otherEndpointId, toByteArray(-1));
-
-    }
-
-    @Override
-    public void onMessageReceived(final String s, final byte[] bytes, final boolean b) {
-
-    }
-
-    @Override
-    public void onDisconnected(final String s) {
-
+        Payload payload = Payload.fromBytes(toByteArray(-1));
+        Nearby.Connections.sendPayload(googleApiClient, otherEndpointId, payload);
     }
 }
